@@ -61,6 +61,13 @@ impl Player {
                     item_id,
                     response,
                 } => self.buy(shop, item_id, response).await,
+                PlayerMessage::ReceiveGold { amount } => self.wallet += amount,
+                PlayerMessage::Info { response } => {
+                    let _ = response.send(Ok((
+                        self.wallet,
+                        self.inventory.values().cloned().collect(),
+                    )));
+                }
             }
         }
     }
@@ -70,11 +77,11 @@ impl Player {
         &mut self,
         shop: ShopHandle,
         item_id: ItemId,
-        response: oneshot::Sender<Result<Item, BuyError>>,
+        response: oneshot::Sender<Result<Item, PlayerError>>,
     ) {
         let Ok(price) = shop.check_price(item_id).await else {
             info!("Item {item_id} is not available in the shop");
-            let _ = response.send(Err(BuyError::NotAvailable));
+            let _ = response.send(Err(PlayerError::ItemNotAvailableToBuy));
             return;
         };
         let available = self.wallet;
@@ -83,7 +90,7 @@ impl Player {
                 "Not enough gold to buy item {item_id}. You have {available:?} but the price is {price:?}",
                 price = price
             );
-            let buy_error = BuyError::NotEnoughGold { available, price };
+            let buy_error = PlayerError::NotEnoughGold { available, price };
             let _ = response.send(Err(buy_error));
             return;
         }
@@ -91,7 +98,7 @@ impl Player {
         let Ok(item) = shop.buy_item(item_id, price).await else {
             info!("Item {item_id} is not available in the shop");
             self.wallet += price;
-            let _ = response.send(Err(BuyError::NotAvailable));
+            let _ = response.send(Err(PlayerError::ItemNotAvailableToBuy));
             return;
         };
         info!("Successfully bought item {item} for {price}");
@@ -113,11 +120,26 @@ impl fmt::Display for PlayerHandle {
 }
 
 impl PlayerHandle {
-    pub async fn buy(&mut self, shop: ShopHandle, item_id: ItemId) -> Result<Item, BuyError> {
+    pub async fn buy(&mut self, shop: ShopHandle, item_id: ItemId) -> Result<Item, PlayerError> {
         let (response_tx, response_rx) = oneshot::channel();
         let message = PlayerMessage::BuyItem {
             shop,
             item_id,
+            response: response_tx,
+        };
+        self.sender.send(message).await?;
+        response_rx.await?
+    }
+
+    pub async fn receive_gold(&mut self, amount: Gold) -> Result<(), PlayerError> {
+        let message = PlayerMessage::ReceiveGold { amount };
+        self.sender.send(message).await?;
+        Ok(())
+    }
+
+    pub async fn info(&self) -> Result<(Gold, Vec<Item>)> {
+        let (response_tx, response_rx) = oneshot::channel();
+        let message = PlayerMessage::Info {
             response: response_tx,
         };
         self.sender.send(message).await?;
@@ -134,14 +156,27 @@ pub enum PlayerMessage {
         /// The item to buy.
         item_id: ItemId,
         /// The response channel to send the result of the buy operation.
-        response: oneshot::Sender<Result<Item, BuyError>>,
+        response: oneshot::Sender<Result<Item, PlayerError>>,
+    },
+    /// Add money to the player's wallet (from some external source).
+    ReceiveGold {
+        /// The amount of money to add.
+        amount: Gold,
+    },
+    /// Get the player's information.
+    /// This will return the player's current wallet balance and inventory.
+    Info {
+        /// The response channel to send the player's information.
+        response: oneshot::Sender<Result<(Gold, Vec<Item>)>>,
     },
 }
 
+type Result<T, E = PlayerError> = std::result::Result<T, E>;
+
 #[derive(Debug, Error)]
-pub enum BuyError {
+pub enum PlayerError {
     #[error("The item is not available")]
-    NotAvailable,
+    ItemNotAvailableToBuy,
     #[error("Not enough gold to buy the item. You have {available:?} but the price is {price:?}")]
     NotEnoughGold { available: Gold, price: Gold },
     #[error("Player Disconnected")]

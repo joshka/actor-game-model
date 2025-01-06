@@ -10,6 +10,7 @@ use tracing::{debug, info};
 use crate::{
     items::{Item, ItemId},
     money::Gold,
+    player::PlayerHandle,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,16 +34,18 @@ pub struct Shop {
     id: ShopId,
     inventory: HashMap<ItemId, Item>,
     receiver: mpsc::Receiver<ShopMessage>,
+    owner: PlayerHandle,
 }
 
 impl Shop {
-    pub fn new(items: impl IntoIterator<Item = Item>) -> ShopHandle {
+    pub fn new(owner: PlayerHandle, items: impl IntoIterator<Item = Item>) -> ShopHandle {
         let (sender, receiver) = mpsc::channel(100);
         let id = ShopId::new();
         let shop = Shop {
             id,
             inventory: items.into_iter().map(|item| (item.id, item)).collect(),
             receiver,
+            owner,
         };
         tokio::spawn(shop.run());
         ShopHandle { id, sender }
@@ -60,7 +63,7 @@ impl Shop {
                     item_id,
                     payment,
                     response,
-                } => self.buy_item(item_id, payment, response),
+                } => self.buy_item(item_id, payment, response).await,
             }
         }
     }
@@ -81,7 +84,7 @@ impl Shop {
         }
     }
 
-    fn buy_item(
+    async fn buy_item(
         &mut self,
         item_id: ItemId,
         payment: Gold,
@@ -102,10 +105,11 @@ impl Shop {
                 price: item.price,
             };
             let _ = response.send(Err(buy_error));
-            self.inventory.insert(item_id, item);
+            self.inventory.insert(item_id, item); // Return the item to the shop
             return;
         }
         info!("{item} purchased for {payment}");
+        let _ = self.owner.receive_gold(payment).await;
         let _ = response.send(Ok(item));
     }
 }
@@ -170,6 +174,10 @@ pub enum ShopMessage {
         item_id: ItemId,
         response: oneshot::Sender<Result<Gold>>,
     },
+}
+
+pub enum OwnerMessage {
+    ItemSold { item: ItemId, payment: Gold },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;

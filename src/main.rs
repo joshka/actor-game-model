@@ -21,17 +21,25 @@ async fn main() -> color_eyre::Result<()> {
     let bow = Item::new("Bow", Gold::new(250));
 
     let sword_id = sword.id;
-    let shield_id = shield.id;
+    let bow_id = bow.id;
 
-    let shop = shop::Shop::new([sword, shield, axe, bow]);
+    let player1 = Player::new(Gold::new(1000), []);
+    let player2 = Player::new(Gold::new(1000), []);
 
-    let player1 = Player::new(Gold::new(200), []);
-    let player2 = Player::new(Gold::new(300), []);
+    let shop1 = shop::Shop::new(player1.clone(), [sword, shield]);
+    let shop2 = shop::Shop::new(player2.clone(), [axe, bow]);
 
     let _ = join!(
-        buy(player1, shop.clone(), sword_id),
-        buy(player2, shop.clone(), shield_id)
+        buy(player1.clone(), shop2, bow_id),
+        buy(player2.clone(), shop1, sword_id)
     );
+
+    let player1_info = player1.info().await;
+    let player2_info = player2.info().await;
+
+    info!("Player1: {:?}", player1_info);
+    info!("Player2: {:?}", player2_info);
+
     Ok(())
 }
 
@@ -39,7 +47,7 @@ async fn buy(
     mut player: PlayerHandle,
     shop: ShopHandle,
     item_id: ItemId,
-) -> Result<(), player::BuyError> {
+) -> Result<(), player::PlayerError> {
     match player.buy(shop.clone(), item_id).await {
         Ok(item) => {
             info!("{player} bought {item} from {shop}");
